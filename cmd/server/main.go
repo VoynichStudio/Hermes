@@ -98,17 +98,26 @@ func (s *ChatServer) SendMessage(
 
 	s.rwmu.RLock()
 	ch, exists := s.chs[req.Msg.SentMessage.ChannelId]
-
 	if !exists {
 		s.rwmu.RUnlock()
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("Channel not found"))
 	}
-	for _, u := range ch.Users {
-		if ch, ok := s.userStreams[u.Id]; ok {
-			ch <- msg
-		}
+
+	userIDs := make([]string, len(ch.Users))
+	for i, u := range ch.Users {
+		userIDs[i] = u.Id
 	}
 	s.rwmu.RUnlock()
+
+	for _, userID := range userIDs {
+		s.rwmu.RLock()
+		userStream, ok := s.userStreams[userID]
+		s.rwmu.RUnlock()
+		if ok {
+			userStream <- msg
+		}
+	}
+
 	return connect.NewResponse(&chatv1.SendMessageResponse{Ok: true}), nil
 }
 
