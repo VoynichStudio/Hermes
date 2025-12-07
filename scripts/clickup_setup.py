@@ -5,6 +5,8 @@ Creates Epics, Stories, and Tasks for MMORPG Chat Engine development.
 
 Usage:
     python clickup_setup.py --api-key YOUR_API_KEY
+    python clickup_setup.py --api-key YOUR_API_KEY --test  # Test API connection
+    python clickup_setup.py --api-key YOUR_API_KEY --team-id 12345  # Skip workspace lookup
 
 Requirements:
     pip install requests
@@ -27,6 +29,9 @@ FOLDER_NAME = "Hermes"
 LIST_NAME = "Product Backlog"
 
 BASE_URL = "https://api.clickup.com/api/v2"
+
+# Enable debug mode for verbose output
+DEBUG = False
 
 # Jira-like statuses for Scrum
 STATUSES = [
@@ -87,6 +92,12 @@ class ClickUpClient:
 
         url = f"{BASE_URL}/{endpoint}"
 
+        if DEBUG:
+            print(f"  DEBUG: {method} {url}")
+            print(f"  DEBUG: Headers: {self.headers}")
+            if data:
+                print(f"  DEBUG: Data: {data}")
+
         try:
             if method == "GET":
                 response = requests.get(url, headers=self.headers)
@@ -96,6 +107,10 @@ class ClickUpClient:
                 response = requests.put(url, headers=self.headers, json=data)
             else:
                 raise ValueError(f"Unknown method: {method}")
+
+            if DEBUG:
+                print(f"  DEBUG: Status: {response.status_code}")
+                print(f"  DEBUG: Response: {response.text[:500] if response.text else 'empty'}")
 
             if response.status_code == 429:  # Rate limited
                 print("  Rate limited, waiting 60 seconds...")
@@ -111,9 +126,49 @@ class ClickUpClient:
                 print(f"  Response: {e.response.text}")
             raise
 
+    def test_connection(self) -> dict:
+        """Test API connection and return diagnostic info"""
+        results = {
+            "api_key_format": "valid" if self.api_key.startswith("pk_") else "invalid (should start with pk_)",
+            "endpoints_tested": []
+        }
+
+        # Test different endpoint variations
+        endpoints_to_test = [
+            ("GET", "user", "Get current user"),
+            ("GET", "team", "Get teams/workspaces"),
+            ("GET", "team/", "Get teams (with trailing slash)"),
+        ]
+
+        for method, endpoint, description in endpoints_to_test:
+            url = f"{BASE_URL}/{endpoint}"
+            try:
+                response = requests.request(method, url, headers=self.headers)
+                results["endpoints_tested"].append({
+                    "endpoint": endpoint,
+                    "description": description,
+                    "status": response.status_code,
+                    "success": response.status_code == 200,
+                    "response": response.text[:200] if response.text else "empty"
+                })
+            except Exception as e:
+                results["endpoints_tested"].append({
+                    "endpoint": endpoint,
+                    "description": description,
+                    "status": "error",
+                    "success": False,
+                    "response": str(e)
+                })
+
+        return results
+
     def get_teams(self) -> list:
         """Get all workspaces/teams"""
         return self._request("GET", "team")["teams"]
+
+    def get_user(self) -> dict:
+        """Get current authenticated user"""
+        return self._request("GET", "user")
 
     def get_spaces(self, team_id: str) -> list:
         """Get all spaces in a workspace"""
@@ -1216,8 +1271,55 @@ def find_or_create(items: list, name: str, create_fn) -> dict:
     print(f"  Creating: {name}")
     return create_fn()
 
-def setup_clickup(api_key: str, dry_run: bool = False):
+def test_api_connection(api_key: str):
+    """Test API connection and diagnose issues"""
+    print("=" * 60)
+    print("ClickUp API Connection Test")
+    print("=" * 60)
+
+    client = ClickUpClient(api_key)
+    results = client.test_connection()
+
+    print(f"\nAPI Key Format: {results['api_key_format']}")
+    print(f"\nTesting Endpoints:")
+    print("-" * 40)
+
+    for test in results["endpoints_tested"]:
+        status_icon = "[OK]" if test["success"] else "[FAIL]"
+        print(f"\n{status_icon} {test['description']}")
+        print(f"    Endpoint: {BASE_URL}/{test['endpoint']}")
+        print(f"    Status: {test['status']}")
+        print(f"    Response: {test['response'][:100]}...")
+
+    print("\n" + "=" * 60)
+
+    # Provide recommendations
+    any_success = any(t["success"] for t in results["endpoints_tested"])
+
+    if any_success:
+        print("API connection successful!")
+        # Find which endpoint works
+        for test in results["endpoints_tested"]:
+            if test["success"]:
+                print(f"  Working endpoint: {test['endpoint']}")
+    else:
+        print("API connection FAILED. Possible causes:")
+        print("  1. Invalid API key - regenerate at ClickUp > Settings > Apps > API Token")
+        print("  2. API key expired - generate a new one")
+        print("  3. Network issue - check your internet connection")
+        print("  4. ClickUp API is down - check https://status.clickup.com")
+        print("\nTo find your Team ID manually:")
+        print("  1. Go to ClickUp in your browser")
+        print("  2. Look at the URL: https://app.clickup.com/XXXXXXX/...")
+        print("  3. The number after app.clickup.com/ is your Team ID")
+        print("  4. Run: python clickup_setup.py --api-key YOUR_KEY --team-id XXXXXXX")
+
+    return any_success
+
+
+def setup_clickup(api_key: str, dry_run: bool = False, team_id: str = None):
     """Main setup function"""
+    global DEBUG
 
     print("=" * 60)
     print("ClickUp Project Setup for Hermes Chat Engine")
@@ -1227,20 +1329,37 @@ def setup_clickup(api_key: str, dry_run: bool = False):
 
     # Step 1: Find workspace
     print("\n[1/6] Finding workspace...")
-    teams = client.get_teams()
-    team = None
-    for t in teams:
-        if t["name"].lower() == WORKSPACE_NAME.lower():
-            team = t
-            break
 
-    if not team:
-        print(f"  ERROR: Workspace '{WORKSPACE_NAME}' not found!")
-        print(f"  Available workspaces: {[t['name'] for t in teams]}")
-        sys.exit(1)
+    if team_id:
+        # User provided team_id directly
+        print(f"  Using provided Team ID: {team_id}")
+    else:
+        # Try to get teams via API
+        try:
+            teams = client.get_teams()
+            team = None
+            for t in teams:
+                if t["name"].lower() == WORKSPACE_NAME.lower():
+                    team = t
+                    break
 
-    print(f"  Found workspace: {team['name']} (ID: {team['id']})")
-    team_id = team["id"]
+            if not team:
+                print(f"  ERROR: Workspace '{WORKSPACE_NAME}' not found!")
+                print(f"  Available workspaces: {[t['name'] for t in teams]}")
+                sys.exit(1)
+
+            print(f"  Found workspace: {team['name']} (ID: {team['id']})")
+            team_id = team["id"]
+        except Exception as e:
+            print(f"  ERROR: Could not fetch workspaces: {e}")
+            print("\n  WORKAROUND: Find your Team ID manually:")
+            print("    1. Go to ClickUp in your browser")
+            print("    2. Look at the URL: https://app.clickup.com/XXXXXXX/...")
+            print("    3. The number after app.clickup.com/ is your Team ID")
+            print("    4. Run: python clickup_setup.py --api-key YOUR_KEY --team-id XXXXXXX")
+            print("\n  Or run with --test to diagnose the API connection:")
+            print("    python clickup_setup.py --api-key YOUR_KEY --test")
+            sys.exit(1)
 
     # Step 2: Find or create space
     print("\n[2/6] Setting up space...")
@@ -1382,13 +1501,32 @@ def setup_clickup(api_key: str, dry_run: bool = False):
 # ============================================================================
 
 def main():
+    global DEBUG
+
     parser = argparse.ArgumentParser(
         description="Set up ClickUp project for Hermes Chat Engine",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Test API connection first
+  python clickup_setup.py --api-key pk_12345_XXXXX --test
+
+  # Normal setup (auto-detects workspace)
   python clickup_setup.py --api-key pk_12345_XXXXX
+
+  # Setup with manual Team ID (if auto-detect fails)
+  python clickup_setup.py --api-key pk_12345_XXXXX --team-id 12345678
+
+  # Dry run (preview without creating anything)
   python clickup_setup.py --api-key pk_12345_XXXXX --dry-run
+
+  # Debug mode (verbose output)
+  python clickup_setup.py --api-key pk_12345_XXXXX --debug
+
+How to find your Team ID:
+  1. Go to ClickUp in your browser
+  2. Look at the URL: https://app.clickup.com/XXXXXXX/...
+  3. The number after app.clickup.com/ is your Team ID
         """
     )
 
@@ -1399,20 +1537,47 @@ Examples:
     )
 
     parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Test API connection and diagnose issues"
+    )
+
+    parser.add_argument(
+        "--team-id",
+        help="Team/Workspace ID (find in ClickUp URL: app.clickup.com/XXXXX/...)"
+    )
+
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would be created without making changes"
     )
 
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode with verbose output"
+    )
+
     args = parser.parse_args()
 
+    if args.debug:
+        DEBUG = True
+
     try:
-        setup_clickup(args.api_key, args.dry_run)
+        if args.test:
+            success = test_api_connection(args.api_key)
+            sys.exit(0 if success else 1)
+        else:
+            setup_clickup(args.api_key, args.dry_run, args.team_id)
     except KeyboardInterrupt:
         print("\n\nSetup cancelled by user")
         sys.exit(1)
     except Exception as e:
         print(f"\nError: {e}")
+        if DEBUG:
+            import traceback
+            traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":
