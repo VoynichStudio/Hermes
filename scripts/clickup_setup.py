@@ -206,10 +206,9 @@ class ClickUpClient:
         return self._request("GET", f"folder/{folder_id}/list")["lists"]
 
     def create_list(self, folder_id: str, name: str) -> dict:
-        """Create a new list with Scrum statuses"""
+        """Create a new list"""
         data = {
-            "name": name,
-            "status": "backlog"
+            "name": name
         }
         return self._request("POST", f"folder/{folder_id}/list", data)
 
@@ -220,7 +219,6 @@ class ClickUpClient:
             "name": name,
             "description": description,
             "priority": priority,
-            "status": "backlog",
         }
         if tags:
             data["tags"] = tags
