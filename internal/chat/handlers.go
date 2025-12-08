@@ -73,12 +73,31 @@ func (s *Server) SendMessage(
 	req *connect.Request[chatv1.SendMessageRequest],
 ) (*connect.Response[chatv1.SendMessageResponse], error) {
 	// Get user from context (set by auth middleware)
-	_, ok := auth.UserFromContext(ctx)
+	user, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, auth.ErrNoToken)
 	}
 
 	msg := req.Msg.SentMessage
+
+	// Ensure the message UserId matches the authenticated user
+	msg.UserId = user.Id
+
+	// Process the message (generates ID, timestamps, validates, filters)
+	if err := s.messageProcessor.Process(ctx, msg, user); err != nil {
+		switch err {
+		case ErrMessageEmpty:
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		case ErrMessageTooLong:
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		case ErrMessageInvalidUTF8:
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		case ErrMessageFiltered:
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		default:
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
+	}
 
 	// Broadcast using the broadcaster interface
 	if err := s.broadcaster.Broadcast(ctx, msg.ChannelId, msg); err != nil {

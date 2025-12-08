@@ -27,6 +27,49 @@ const (
 	Permission_PERMISSION_ADMIN       Permission = 4 // Full admin access
 )
 
+// MessageType defines the type of message
+type MessageType int32
+
+const (
+	MessageType_MESSAGE_TYPE_UNSPECIFIED MessageType = 0
+	MessageType_MESSAGE_TYPE_CHAT        MessageType = 1 // Regular chat message
+	MessageType_MESSAGE_TYPE_EMOTE       MessageType = 2 // Emote/action message (/me)
+	MessageType_MESSAGE_TYPE_SYSTEM      MessageType = 3 // System announcement
+	MessageType_MESSAGE_TYPE_WHISPER     MessageType = 4 // Private message
+	MessageType_MESSAGE_TYPE_PARTY       MessageType = 5 // Party chat message
+	MessageType_MESSAGE_TYPE_GUILD       MessageType = 6 // Guild chat message
+	MessageType_MESSAGE_TYPE_TRADE       MessageType = 7 // Trade channel message
+	MessageType_MESSAGE_TYPE_LFG         MessageType = 8 // Looking for group message
+	MessageType_MESSAGE_TYPE_COMBAT_LOG  MessageType = 9 // Combat log entry
+)
+
+// MessageMetadata contains game-specific context for a message
+type MessageMetadata struct {
+	// Player location in the game world
+	ZoneId   string  // Current zone/map ID
+	ZoneName string  // Human-readable zone name
+	PosX     float32 // X coordinate
+	PosY     float32 // Y coordinate
+	PosZ     float32 // Z coordinate
+
+	// Player character info
+	CharacterName  string // Character name (may differ from username)
+	CharacterLevel int32  // Character level
+	CharacterClass string // Character class (Warrior, Mage, etc.)
+	GuildName      string // Guild name if applicable
+	GuildRank      string // Rank within guild
+
+	// Message context
+	TargetUserId   string // For whispers/direct messages
+	TargetUsername string // Target display name
+	ReplyToId      string // ID of message being replied to
+	MentionedUsers []string // User IDs mentioned in message (@mentions)
+
+	// Client info
+	ClientVersion string // Game client version
+	Platform      string // Platform (PC, Console, Mobile)
+}
+
 // ChannelPermission defines a user's permissions in a channel
 type ChannelPermission struct {
 	UserId      string
@@ -59,8 +102,31 @@ type Message struct {
 	ChannelId string
 	UserId    string
 	Content   string
-	Timestamp int64
+	Timestamp int64 // Unix timestamp in milliseconds (server-assigned)
+
+	// Enhanced fields
+	Type       MessageType      // Type of message (chat, emote, system, etc.)
+	Metadata   *MessageMetadata // Game-specific metadata
+	Username   string           // Sender's display name (denormalized for efficiency)
+	ServerTime int64            // Server timestamp when message was processed
+	Edited     bool             // Whether message has been edited
+	EditedAt   int64            // When message was last edited
+	Deleted    bool             // Soft delete flag
+	Flags      []MessageFlag    // Additional flags (pinned, highlighted, etc.)
 }
+
+// MessageFlag represents additional message state
+type MessageFlag int32
+
+const (
+	MessageFlag_MESSAGE_FLAG_UNSPECIFIED MessageFlag = 0
+	MessageFlag_MESSAGE_FLAG_PINNED      MessageFlag = 1 // Message is pinned
+	MessageFlag_MESSAGE_FLAG_HIGHLIGHTED MessageFlag = 2 // Message is highlighted
+	MessageFlag_MESSAGE_FLAG_FILTERED    MessageFlag = 3 // Message was filtered (profanity)
+	MessageFlag_MESSAGE_FLAG_VERIFIED    MessageFlag = 4 // From verified user
+	MessageFlag_MESSAGE_FLAG_BROADCAST   MessageFlag = 5 // Server-wide broadcast
+	MessageFlag_MESSAGE_FLAG_URGENT      MessageFlag = 6 // Urgent/priority message
+)
 
 // JoinChannelRequest is the request to join a channel
 type JoinChannelRequest struct {

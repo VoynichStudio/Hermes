@@ -3,7 +3,6 @@ package chat
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 
 	chatv1 "Hermes/gen/chat/v1"
 )
@@ -11,12 +10,16 @@ import (
 // safeChannel wraps a channel with a closed flag for safe concurrent access
 type safeChannel struct {
 	ch     chan *chatv1.Message
-	closed atomic.Bool
+	closed bool
+	mu     sync.RWMutex
 }
 
-// Send safely sends to the channel, returning false if closed
+// Send safely sends to the channel, returning false if closed or full
 func (sc *safeChannel) Send(msg *chatv1.Message) bool {
-	if sc.closed.Load() {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+
+	if sc.closed {
 		return false
 	}
 	select {
@@ -30,7 +33,11 @@ func (sc *safeChannel) Send(msg *chatv1.Message) bool {
 
 // Close safely closes the channel
 func (sc *safeChannel) Close() {
-	if sc.closed.CompareAndSwap(false, true) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	if !sc.closed {
+		sc.closed = true
 		close(sc.ch)
 	}
 }

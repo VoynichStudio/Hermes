@@ -13,27 +13,36 @@ type Server struct {
 	chatv1connect.UnimplementedChatServiceHandler
 
 	// Dependencies injected via constructor
-	channelRepo    ChannelRepository
-	messageRepo    MessageRepository
-	sessionManager UserSessionManager
-	broadcaster    MessageBroadcaster
+	channelRepo      ChannelRepository
+	messageRepo      MessageRepository
+	sessionManager   UserSessionManager
+	broadcaster      MessageBroadcaster
+	messageProcessor *MessageProcessor
 }
 
 // ServerConfig holds configuration for creating a new server
 type ServerConfig struct {
-	ChannelRepo    ChannelRepository
-	MessageRepo    MessageRepository
-	SessionManager UserSessionManager
-	Broadcaster    MessageBroadcaster
+	ChannelRepo      ChannelRepository
+	MessageRepo      MessageRepository
+	SessionManager   UserSessionManager
+	Broadcaster      MessageBroadcaster
+	MessageProcessor *MessageProcessor
 }
 
 // NewServer creates a new chat server with the provided dependencies
 func NewServer(cfg ServerConfig) *Server {
+	// Use default message processor if not provided
+	messageProcessor := cfg.MessageProcessor
+	if messageProcessor == nil {
+		messageProcessor = NewMessageProcessor(nil)
+	}
+
 	return &Server{
-		channelRepo:    cfg.ChannelRepo,
-		messageRepo:    cfg.MessageRepo,
-		sessionManager: cfg.SessionManager,
-		broadcaster:    cfg.Broadcaster,
+		channelRepo:      cfg.ChannelRepo,
+		messageRepo:      cfg.MessageRepo,
+		sessionManager:   cfg.SessionManager,
+		broadcaster:      cfg.Broadcaster,
+		messageProcessor: messageProcessor,
 	}
 }
 
@@ -44,6 +53,15 @@ func NewServerWithDefaults() *Server {
 	sessionManager := NewMemoryUserSessionManager("local")
 	broadcaster := NewMemoryMessageBroadcaster(channelRepo, sessionManager, messageRepo)
 
+	// Create message processor with default filters
+	messageProcessor := NewMessageProcessor(DefaultMessageConfig())
+
+	// Add default content filters
+	profanityFilter := NewProfanityFilter(FilterModeMask)
+	spamFilter := NewSpamFilter()
+	messageProcessor.AddFilter(profanityFilter)
+	messageProcessor.AddFilter(spamFilter)
+
 	// Create default general channel
 	ctx := context.Background()
 	_, _ = channelRepo.GetOrCreate(ctx, &chatv1.Channel{
@@ -53,10 +71,11 @@ func NewServerWithDefaults() *Server {
 	})
 
 	return NewServer(ServerConfig{
-		ChannelRepo:    channelRepo,
-		MessageRepo:    messageRepo,
-		SessionManager: sessionManager,
-		Broadcaster:    broadcaster,
+		ChannelRepo:      channelRepo,
+		MessageRepo:      messageRepo,
+		SessionManager:   sessionManager,
+		Broadcaster:      broadcaster,
+		MessageProcessor: messageProcessor,
 	})
 }
 
@@ -78,4 +97,9 @@ func (s *Server) SessionManager() UserSessionManager {
 // Broadcaster returns the message broadcaster (for testing)
 func (s *Server) Broadcaster() MessageBroadcaster {
 	return s.broadcaster
+}
+
+// MessageProcessor returns the message processor (for testing/configuration)
+func (s *Server) MessageProcessor() *MessageProcessor {
+	return s.messageProcessor
 }
