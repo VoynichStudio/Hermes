@@ -46,16 +46,9 @@ func (b *MemoryMessageBroadcaster) Broadcast(ctx context.Context, channelID stri
 		_ = b.messageRepo.Save(ctx, msg)
 	}
 
-	// Send to all users in the channel
+	// Send to all users in the channel using safe send
 	for _, user := range users {
-		msgChan, err := b.sessionManager.GetMessageChannel(ctx, user.Id)
-		if err != nil {
-			// User not connected, skip
-			continue
-		}
-
-		// Safe non-blocking send (handles closed channels)
-		safeSend(msgChan, msg)
+		b.sessionManager.SendMessage(ctx, user.Id, msg)
 	}
 
 	// Also send to any direct subscribers
@@ -90,19 +83,10 @@ func safeSend(ch chan *chatv1.Message, msg *chatv1.Message) (sent bool) {
 
 // SendToUser sends a message directly to a specific user
 func (b *MemoryMessageBroadcaster) SendToUser(ctx context.Context, userID string, msg *chatv1.Message) error {
-	msgChan, err := b.sessionManager.GetMessageChannel(ctx, userID)
-	if err != nil {
-		return err
+	if !b.sessionManager.SendMessage(ctx, userID, msg) {
+		return ErrUserNotFound
 	}
-
-	// Non-blocking send
-	select {
-	case msgChan <- msg:
-		return nil
-	default:
-		// Channel full - could return an error or just drop
-		return nil
-	}
+	return nil
 }
 
 // Subscribe subscribes to messages for a channel

@@ -71,6 +71,9 @@ type UserSessionManager interface {
 	// GetMessageChannel returns the message channel for a user
 	GetMessageChannel(ctx context.Context, userID string) (chan *chatv1.Message, error)
 
+	// SendMessage safely sends a message to a user (handles closed channels)
+	SendMessage(ctx context.Context, userID string, msg *chatv1.Message) bool
+
 	// AddChannel adds a channel subscription to a user's session
 	AddChannel(ctx context.Context, userID string, channelID string) error
 

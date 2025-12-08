@@ -27,8 +27,8 @@ go.work.sum
 
 tags
 
-# Generated files from protobuf
-gen/
+# Generated files from protobuf (keeping stubs tracked)
+# gen/
 
 # Build output
 bin/

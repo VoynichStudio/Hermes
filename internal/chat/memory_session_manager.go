@@ -3,14 +3,47 @@ package chat
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	chatv1 "Hermes/gen/chat/v1"
 )
 
+// safeChannel wraps a channel with a closed flag for safe concurrent access
+type safeChannel struct {
+	ch     chan *chatv1.Message
+	closed atomic.Bool
+}
+
+// Send safely sends to the channel, returning false if closed
+func (sc *safeChannel) Send(msg *chatv1.Message) bool {
+	if sc.closed.Load() {
+		return false
+	}
+	select {
+	case sc.ch <- msg:
+		return true
+	default:
+		// Channel full
+		return false
+	}
+}
+
+// Close safely closes the channel
+func (sc *safeChannel) Close() {
+	if sc.closed.CompareAndSwap(false, true) {
+		close(sc.ch)
+	}
+}
+
+// Chan returns the underlying channel for receiving
+func (sc *safeChannel) Chan() chan *chatv1.Message {
+	return sc.ch
+}
+
 // MemoryUserSessionManager is an in-memory implementation of UserSessionManager
 type MemoryUserSessionManager struct {
 	sessions    map[string]*UserSession
-	msgChannels map[string]chan *chatv1.Message
+	msgChannels map[string]*safeChannel
 	serverID    string
 	mu          sync.RWMutex
 }
@@ -19,7 +52,7 @@ type MemoryUserSessionManager struct {
 func NewMemoryUserSessionManager(serverID string) *MemoryUserSessionManager {
 	return &MemoryUserSessionManager{
 		sessions:    make(map[string]*UserSession),
-		msgChannels: make(map[string]chan *chatv1.Message),
+		msgChannels: make(map[string]*safeChannel),
 		serverID:    serverID,
 	}
 }
@@ -30,8 +63,8 @@ func (m *MemoryUserSessionManager) Register(ctx context.Context, user *chatv1.Us
 	defer m.mu.Unlock()
 
 	// Close existing channel if user reconnects
-	if existingChan, exists := m.msgChannels[user.Id]; exists {
-		close(existingChan)
+	if existing, exists := m.msgChannels[user.Id]; exists {
+		existing.Close()
 	}
 
 	// Create new session
@@ -42,13 +75,15 @@ func (m *MemoryUserSessionManager) Register(ctx context.Context, user *chatv1.Us
 		ServerID:   m.serverID,
 	}
 
-	// Create message channel with buffer
-	msgChan := make(chan *chatv1.Message, 100)
+	// Create safe message channel with buffer
+	safeChan := &safeChannel{
+		ch: make(chan *chatv1.Message, 100),
+	}
 
 	m.sessions[user.Id] = session
-	m.msgChannels[user.Id] = msgChan
+	m.msgChannels[user.Id] = safeChan
 
-	return msgChan, nil
+	return safeChan.Chan(), nil
 }
 
 // Unregister removes a user's session
@@ -56,8 +91,8 @@ func (m *MemoryUserSessionManager) Unregister(ctx context.Context, userID string
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if msgChan, exists := m.msgChannels[userID]; exists {
-		close(msgChan)
+	if safeChan, exists := m.msgChannels[userID]; exists {
+		safeChan.Close()
 		delete(m.msgChannels, userID)
 	}
 
@@ -82,11 +117,23 @@ func (m *MemoryUserSessionManager) GetMessageChannel(ctx context.Context, userID
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	msgChan, exists := m.msgChannels[userID]
+	safeChan, exists := m.msgChannels[userID]
 	if !exists {
 		return nil, ErrUserNotFound
 	}
-	return msgChan, nil
+	return safeChan.Chan(), nil
+}
+
+// SendMessage safely sends a message to a user (handles closed channels)
+func (m *MemoryUserSessionManager) SendMessage(ctx context.Context, userID string, msg *chatv1.Message) bool {
+	m.mu.RLock()
+	safeChan, exists := m.msgChannels[userID]
+	m.mu.RUnlock()
+
+	if !exists {
+		return false
+	}
+	return safeChan.Send(msg)
 }
 
 // AddChannel adds a channel subscription to a user's session
