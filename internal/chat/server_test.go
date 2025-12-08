@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -8,17 +9,18 @@ import (
 	chatv1 "Hermes/gen/chat/v1"
 )
 
-func TestNewServer(t *testing.T) {
-	server := NewServer()
+func TestNewServerWithDefaults(t *testing.T) {
+	server := NewServerWithDefaults()
 
 	if server == nil {
-		t.Fatal("NewServer() returned nil")
+		t.Fatal("NewServerWithDefaults() returned nil")
 	}
 
 	// Should have default "general" channel
-	ch, exists := server.GetChannel("general")
-	if !exists {
-		t.Error("NewServer() should create default 'general' channel")
+	ctx := context.Background()
+	ch, err := server.ChannelRepo().Get(ctx, "general")
+	if err != nil {
+		t.Errorf("NewServerWithDefaults() should create default 'general' channel: %v", err)
 	}
 	if ch.Id != "general" {
 		t.Errorf("general channel Id = %q, want %q", ch.Id, "general")
@@ -28,38 +30,76 @@ func TestNewServer(t *testing.T) {
 	}
 }
 
-func TestServer_GetChannel(t *testing.T) {
-	server := NewServer()
+func TestNewServer_WithCustomDependencies(t *testing.T) {
+	channelRepo := NewMemoryChannelRepository()
+	messageRepo := NewMemoryMessageRepository()
+	sessionManager := NewMemoryUserSessionManager("test-server")
+	broadcaster := NewMemoryMessageBroadcaster(channelRepo, sessionManager, messageRepo)
+
+	server := NewServer(ServerConfig{
+		ChannelRepo:    channelRepo,
+		MessageRepo:    messageRepo,
+		SessionManager: sessionManager,
+		Broadcaster:    broadcaster,
+	})
+
+	if server == nil {
+		t.Fatal("NewServer() returned nil")
+	}
+
+	// Verify dependencies are wired correctly
+	if server.ChannelRepo() != channelRepo {
+		t.Error("ChannelRepo not correctly wired")
+	}
+	if server.MessageRepo() != messageRepo {
+		t.Error("MessageRepo not correctly wired")
+	}
+	if server.SessionManager() != sessionManager {
+		t.Error("SessionManager not correctly wired")
+	}
+	if server.Broadcaster() != broadcaster {
+		t.Error("Broadcaster not correctly wired")
+	}
+}
+
+func TestMemoryChannelRepository_Get(t *testing.T) {
+	repo := NewMemoryChannelRepository()
+	ctx := context.Background()
+
+	// Create a channel first
+	channel := &chatv1.Channel{Id: "test-channel", Label: "Test"}
+	_ = repo.Create(ctx, channel)
 
 	tests := []struct {
-		name       string
-		channelID  string
-		wantExists bool
+		name      string
+		channelID string
+		wantErr   error
 	}{
 		{
-			name:       "existing channel",
-			channelID:  "general",
-			wantExists: true,
+			name:      "existing channel",
+			channelID: "test-channel",
+			wantErr:   nil,
 		},
 		{
-			name:       "non-existing channel",
-			channelID:  "random",
-			wantExists: false,
+			name:      "non-existing channel",
+			channelID: "random",
+			wantErr:   ErrChannelNotFound,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, exists := server.GetChannel(tt.channelID)
-			if exists != tt.wantExists {
-				t.Errorf("GetChannel(%q) exists = %v, want %v", tt.channelID, exists, tt.wantExists)
+			_, err := repo.Get(ctx, tt.channelID)
+			if err != tt.wantErr {
+				t.Errorf("Get(%q) error = %v, want %v", tt.channelID, err, tt.wantErr)
 			}
 		})
 	}
 }
 
-func TestServer_GetOrCreateChannel(t *testing.T) {
-	server := NewServer()
+func TestMemoryChannelRepository_GetOrCreate(t *testing.T) {
+	repo := NewMemoryChannelRepository()
+	ctx := context.Background()
 
 	// Test creating a new channel
 	newChannel := &chatv1.Channel{
@@ -67,9 +107,12 @@ func TestServer_GetOrCreateChannel(t *testing.T) {
 		Label: "Test Channel",
 	}
 
-	result := server.GetOrCreateChannel(newChannel)
+	result, err := repo.GetOrCreate(ctx, newChannel)
+	if err != nil {
+		t.Fatalf("GetOrCreate() error = %v", err)
+	}
 	if result.Id != "test-channel" {
-		t.Errorf("GetOrCreateChannel() Id = %q, want %q", result.Id, "test-channel")
+		t.Errorf("GetOrCreate() Id = %q, want %q", result.Id, "test-channel")
 	}
 
 	// Test getting existing channel
@@ -78,49 +121,68 @@ func TestServer_GetOrCreateChannel(t *testing.T) {
 		Label: "Different Label", // Should not update
 	}
 
-	result = server.GetOrCreateChannel(existingChannel)
+	result, err = repo.GetOrCreate(ctx, existingChannel)
+	if err != nil {
+		t.Fatalf("GetOrCreate() error = %v", err)
+	}
 	if result.Label != "Test Channel" {
-		t.Errorf("GetOrCreateChannel() should return existing channel, Label = %q, want %q", result.Label, "Test Channel")
+		t.Errorf("GetOrCreate() should return existing channel, Label = %q, want %q", result.Label, "Test Channel")
 	}
 }
 
-func TestServer_AddUserToChannel(t *testing.T) {
-	server := NewServer()
+func TestMemoryChannelRepository_AddUser(t *testing.T) {
+	repo := NewMemoryChannelRepository()
+	ctx := context.Background()
+
+	// Create channel first
+	channel := &chatv1.Channel{Id: "general", Label: "General", Users: []*chatv1.User{}}
+	_, _ = repo.GetOrCreate(ctx, channel)
 
 	user := &chatv1.User{
 		Id:       "user-123",
 		Username: "testuser",
 	}
 
-	server.AddUserToChannel("general", user)
-
-	ch, _ := server.GetChannel("general")
-	if len(ch.Users) != 1 {
-		t.Errorf("AddUserToChannel() user count = %d, want 1", len(ch.Users))
+	err := repo.AddUser(ctx, "general", user)
+	if err != nil {
+		t.Fatalf("AddUser() error = %v", err)
 	}
-	if ch.Users[0].Id != "user-123" {
-		t.Errorf("AddUserToChannel() user Id = %q, want %q", ch.Users[0].Id, "user-123")
+
+	users, _ := repo.GetUsers(ctx, "general")
+	if len(users) != 1 {
+		t.Errorf("AddUser() user count = %d, want 1", len(users))
+	}
+	if users[0].Id != "user-123" {
+		t.Errorf("AddUser() user Id = %q, want %q", users[0].Id, "user-123")
 	}
 }
 
-func TestServer_AddUserToChannel_NonExistentChannel(t *testing.T) {
-	server := NewServer()
+func TestMemoryChannelRepository_AddUser_NonExistentChannel(t *testing.T) {
+	repo := NewMemoryChannelRepository()
+	ctx := context.Background()
 
 	user := &chatv1.User{
 		Id:       "user-123",
 		Username: "testuser",
 	}
 
-	// Should not panic when channel doesn't exist
-	server.AddUserToChannel("non-existent", user)
+	err := repo.AddUser(ctx, "non-existent", user)
+	if err != ErrChannelNotFound {
+		t.Errorf("AddUser() error = %v, want %v", err, ErrChannelNotFound)
+	}
 }
 
-func TestServer_RegisterUserStream(t *testing.T) {
-	server := NewServer()
+func TestMemoryUserSessionManager_Register(t *testing.T) {
+	manager := NewMemoryUserSessionManager("test-server")
+	ctx := context.Background()
 
-	stream := server.RegisterUserStream("user-123")
+	user := &chatv1.User{Id: "user-123", Username: "testuser"}
+	stream, err := manager.Register(ctx, user)
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
 	if stream == nil {
-		t.Fatal("RegisterUserStream() returned nil")
+		t.Fatal("Register() returned nil stream")
 	}
 
 	// Stream should be buffered
@@ -128,36 +190,48 @@ func TestServer_RegisterUserStream(t *testing.T) {
 	case stream <- &chatv1.Message{Content: "test"}:
 		// Success - channel is buffered
 	default:
-		t.Error("RegisterUserStream() stream should be buffered")
+		t.Error("Register() stream should be buffered")
 	}
 }
 
-func TestServer_UnregisterUserStream(t *testing.T) {
-	server := NewServer()
+func TestMemoryUserSessionManager_Unregister(t *testing.T) {
+	manager := NewMemoryUserSessionManager("test-server")
+	ctx := context.Background()
 
-	server.RegisterUserStream("user-123")
-	server.UnregisterUserStream("user-123")
+	user := &chatv1.User{Id: "user-123", Username: "testuser"}
+	_, _ = manager.Register(ctx, user)
+	_ = manager.Unregister(ctx, "user-123")
 
 	// Re-registering should work
-	stream := server.RegisterUserStream("user-123")
+	stream, err := manager.Register(ctx, user)
+	if err != nil {
+		t.Fatalf("Register() after Unregister() error = %v", err)
+	}
 	if stream == nil {
-		t.Error("RegisterUserStream() after UnregisterUserStream() returned nil")
+		t.Error("Register() after Unregister() returned nil stream")
 	}
 }
 
-func TestServer_BroadcastToChannel(t *testing.T) {
-	server := NewServer()
+func TestMemoryMessageBroadcaster_Broadcast(t *testing.T) {
+	channelRepo := NewMemoryChannelRepository()
+	sessionManager := NewMemoryUserSessionManager("test-server")
+	messageRepo := NewMemoryMessageRepository()
+	broadcaster := NewMemoryMessageBroadcaster(channelRepo, sessionManager, messageRepo)
+	ctx := context.Background()
+
+	// Create channel
+	channel := &chatv1.Channel{Id: "general", Label: "General", Users: []*chatv1.User{}}
+	_, _ = channelRepo.GetOrCreate(ctx, channel)
 
 	// Add users to channel
 	user1 := &chatv1.User{Id: "user-1", Username: "user1"}
 	user2 := &chatv1.User{Id: "user-2", Username: "user2"}
-
-	server.AddUserToChannel("general", user1)
-	server.AddUserToChannel("general", user2)
+	_ = channelRepo.AddUser(ctx, "general", user1)
+	_ = channelRepo.AddUser(ctx, "general", user2)
 
 	// Register streams
-	stream1 := server.RegisterUserStream("user-1")
-	stream2 := server.RegisterUserStream("user-2")
+	stream1, _ := sessionManager.Register(ctx, user1)
+	stream2, _ := sessionManager.Register(ctx, user2)
 
 	// Broadcast message
 	msg := &chatv1.Message{
@@ -166,9 +240,9 @@ func TestServer_BroadcastToChannel(t *testing.T) {
 		Content:   "Hello everyone!",
 	}
 
-	err := server.BroadcastToChannel("general", msg)
+	err := broadcaster.Broadcast(ctx, "general", msg)
 	if err != nil {
-		t.Fatalf("BroadcastToChannel() error = %v", err)
+		t.Fatalf("Broadcast() error = %v", err)
 	}
 
 	// Check both streams received the message
@@ -191,26 +265,38 @@ func TestServer_BroadcastToChannel(t *testing.T) {
 	}
 }
 
-func TestServer_BroadcastToChannel_ChannelNotFound(t *testing.T) {
-	server := NewServer()
+func TestMemoryMessageBroadcaster_Broadcast_ChannelNotFound(t *testing.T) {
+	channelRepo := NewMemoryChannelRepository()
+	sessionManager := NewMemoryUserSessionManager("test-server")
+	messageRepo := NewMemoryMessageRepository()
+	broadcaster := NewMemoryMessageBroadcaster(channelRepo, sessionManager, messageRepo)
+	ctx := context.Background()
 
 	msg := &chatv1.Message{Content: "test"}
-	err := server.BroadcastToChannel("non-existent", msg)
+	err := broadcaster.Broadcast(ctx, "non-existent", msg)
 
 	if err != ErrChannelNotFound {
-		t.Errorf("BroadcastToChannel() error = %v, want %v", err, ErrChannelNotFound)
+		t.Errorf("Broadcast() error = %v, want %v", err, ErrChannelNotFound)
 	}
 }
 
-func TestServer_BroadcastToChannel_FullBuffer(t *testing.T) {
-	server := NewServer()
+func TestMemoryMessageBroadcaster_Broadcast_FullBuffer(t *testing.T) {
+	channelRepo := NewMemoryChannelRepository()
+	sessionManager := NewMemoryUserSessionManager("test-server")
+	messageRepo := NewMemoryMessageRepository()
+	broadcaster := NewMemoryMessageBroadcaster(channelRepo, sessionManager, messageRepo)
+	ctx := context.Background()
+
+	// Create channel and user
+	channel := &chatv1.Channel{Id: "general", Label: "General", Users: []*chatv1.User{}}
+	_, _ = channelRepo.GetOrCreate(ctx, channel)
 
 	user := &chatv1.User{Id: "user-1", Username: "user1"}
-	server.AddUserToChannel("general", user)
-	stream := server.RegisterUserStream("user-1")
+	_ = channelRepo.AddUser(ctx, "general", user)
+	stream, _ := sessionManager.Register(ctx, user)
 
-	// Fill the buffer (capacity is 10)
-	for i := 0; i < 10; i++ {
+	// Fill the buffer (capacity is 100)
+	for i := 0; i < 100; i++ {
 		stream <- &chatv1.Message{Content: "filler"}
 	}
 
@@ -218,7 +304,7 @@ func TestServer_BroadcastToChannel_FullBuffer(t *testing.T) {
 	msg := &chatv1.Message{Content: "overflow"}
 	done := make(chan struct{})
 	go func() {
-		server.BroadcastToChannel("general", msg)
+		broadcaster.Broadcast(ctx, "general", msg)
 		close(done)
 	}()
 
@@ -226,12 +312,67 @@ func TestServer_BroadcastToChannel_FullBuffer(t *testing.T) {
 	case <-done:
 		// Success - did not block
 	case <-time.After(100 * time.Millisecond):
-		t.Error("BroadcastToChannel() blocked on full buffer")
+		t.Error("Broadcast() blocked on full buffer")
 	}
 }
 
-func TestServer_ConcurrentAccess(t *testing.T) {
-	server := NewServer()
+func TestMemoryMessageRepository_SaveAndGet(t *testing.T) {
+	repo := NewMemoryMessageRepository()
+	ctx := context.Background()
+
+	msg := &chatv1.Message{
+		Id:        "msg-1",
+		ChannelId: "general",
+		Content:   "Hello",
+		Timestamp: 12345,
+	}
+
+	err := repo.Save(ctx, msg)
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	retrieved, err := repo.GetByID(ctx, "msg-1")
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if retrieved.Content != "Hello" {
+		t.Errorf("GetByID() Content = %q, want %q", retrieved.Content, "Hello")
+	}
+}
+
+func TestMemoryMessageRepository_GetByChannel(t *testing.T) {
+	repo := NewMemoryMessageRepository()
+	ctx := context.Background()
+
+	// Save multiple messages
+	for i := 0; i < 5; i++ {
+		msg := &chatv1.Message{
+			Id:        "msg-" + string(rune('0'+i)),
+			ChannelId: "general",
+			Content:   "Message " + string(rune('0'+i)),
+		}
+		_ = repo.Save(ctx, msg)
+	}
+
+	messages, cursor, err := repo.GetByChannel(ctx, "general", 3, "")
+	if err != nil {
+		t.Fatalf("GetByChannel() error = %v", err)
+	}
+	if len(messages) != 3 {
+		t.Errorf("GetByChannel() returned %d messages, want 3", len(messages))
+	}
+	if cursor == "" {
+		t.Error("GetByChannel() should return cursor when more messages available")
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	channelRepo := NewMemoryChannelRepository()
+	sessionManager := NewMemoryUserSessionManager("test-server")
+	messageRepo := NewMemoryMessageRepository()
+	broadcaster := NewMemoryMessageBroadcaster(channelRepo, sessionManager, messageRepo)
+	ctx := context.Background()
 
 	var wg sync.WaitGroup
 	numGoroutines := 100
@@ -246,27 +387,31 @@ func TestServer_ConcurrentAccess(t *testing.T) {
 			ch := &chatv1.Channel{
 				Id:    "channel-" + string(rune('0'+id%10)),
 				Label: "Test",
+				Users: []*chatv1.User{},
 			}
-			server.GetOrCreateChannel(ch)
+			_, _ = channelRepo.GetOrCreate(ctx, ch)
 
 			// Add user
 			user := &chatv1.User{Id: "user-" + string(rune('0'+id))}
-			server.AddUserToChannel(ch.Id, user)
+			_ = channelRepo.AddUser(ctx, ch.Id, user)
 
-			// Register stream
-			stream := server.RegisterUserStream(user.Id)
+			// Register session
+			stream, _ := sessionManager.Register(ctx, user)
 
 			// Get channel
-			server.GetChannel(ch.Id)
+			_, _ = channelRepo.Get(ctx, ch.Id)
 
 			// Broadcast
-			server.BroadcastToChannel(ch.Id, &chatv1.Message{Content: "test"})
+			_ = broadcaster.Broadcast(ctx, ch.Id, &chatv1.Message{Content: "test"})
 
-			// Unregister stream
-			server.UnregisterUserStream(user.Id)
+			// Unregister session
+			_ = sessionManager.Unregister(ctx, user.Id)
 
-			// Drain stream
-			close(stream)
+			// Drain stream to avoid leaks
+			go func() {
+				for range stream {
+				}
+			}()
 		}(i)
 	}
 

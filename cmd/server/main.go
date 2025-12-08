@@ -24,8 +24,8 @@ func main() {
 		// Continue with defaults for development
 	}
 
-	// Create chat server
-	chatServer := chat.NewServer()
+	// Create chat server with default in-memory implementations
+	chatServer := chat.NewServerWithDefaults()
 
 	// Set up HTTP handler
 	mux := http.NewServeMux()

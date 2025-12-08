@@ -2,7 +2,7 @@
 package chat
 
 import (
-	"sync"
+	"context"
 
 	chatv1 "Hermes/gen/chat/v1"
 	"Hermes/gen/chat/v1/chatv1connect"
@@ -12,108 +12,70 @@ import (
 type Server struct {
 	chatv1connect.UnimplementedChatServiceHandler
 
-	// channels stores all active channels by ID
-	channels map[string]*chatv1.Channel
-
-	// userStreams maps user IDs to their message channels
-	userStreams map[string]chan *chatv1.Message
-
-	// mu protects concurrent access to channels and userStreams
-	mu sync.RWMutex
+	// Dependencies injected via constructor
+	channelRepo    ChannelRepository
+	messageRepo    MessageRepository
+	sessionManager UserSessionManager
+	broadcaster    MessageBroadcaster
 }
 
-// NewServer creates a new chat server with default channels
-func NewServer() *Server {
-	channels := make(map[string]*chatv1.Channel)
-	channels["general"] = &chatv1.Channel{
+// ServerConfig holds configuration for creating a new server
+type ServerConfig struct {
+	ChannelRepo    ChannelRepository
+	MessageRepo    MessageRepository
+	SessionManager UserSessionManager
+	Broadcaster    MessageBroadcaster
+}
+
+// NewServer creates a new chat server with the provided dependencies
+func NewServer(cfg ServerConfig) *Server {
+	return &Server{
+		channelRepo:    cfg.ChannelRepo,
+		messageRepo:    cfg.MessageRepo,
+		sessionManager: cfg.SessionManager,
+		broadcaster:    cfg.Broadcaster,
+	}
+}
+
+// NewServerWithDefaults creates a new chat server with default in-memory implementations
+func NewServerWithDefaults() *Server {
+	channelRepo := NewMemoryChannelRepository()
+	messageRepo := NewMemoryMessageRepository()
+	sessionManager := NewMemoryUserSessionManager("local")
+	broadcaster := NewMemoryMessageBroadcaster(channelRepo, sessionManager, messageRepo)
+
+	// Create default general channel
+	ctx := context.Background()
+	_, _ = channelRepo.GetOrCreate(ctx, &chatv1.Channel{
 		Id:    "general",
 		Label: "General",
 		Users: []*chatv1.User{},
-	}
+	})
 
-	return &Server{
-		channels:    channels,
-		userStreams: make(map[string]chan *chatv1.Message),
-	}
+	return NewServer(ServerConfig{
+		ChannelRepo:    channelRepo,
+		MessageRepo:    messageRepo,
+		SessionManager: sessionManager,
+		Broadcaster:    broadcaster,
+	})
 }
 
-// GetChannel returns a channel by ID, creating it if it doesn't exist
-func (s *Server) GetChannel(id string) (*chatv1.Channel, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	ch, exists := s.channels[id]
-	return ch, exists
+// ChannelRepo returns the channel repository (for testing)
+func (s *Server) ChannelRepo() ChannelRepository {
+	return s.channelRepo
 }
 
-// GetOrCreateChannel returns an existing channel or creates a new one
-func (s *Server) GetOrCreateChannel(channel *chatv1.Channel) *chatv1.Channel {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if existing, exists := s.channels[channel.Id]; exists {
-		return existing
-	}
-
-	s.channels[channel.Id] = channel
-	return channel
+// MessageRepo returns the message repository (for testing)
+func (s *Server) MessageRepo() MessageRepository {
+	return s.messageRepo
 }
 
-// AddUserToChannel adds a user to a channel
-func (s *Server) AddUserToChannel(channelID string, user *chatv1.User) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if ch, exists := s.channels[channelID]; exists {
-		ch.Users = append(ch.Users, user)
-	}
+// SessionManager returns the session manager (for testing)
+func (s *Server) SessionManager() UserSessionManager {
+	return s.sessionManager
 }
 
-// RegisterUserStream creates a message stream for a user
-func (s *Server) RegisterUserStream(userID string) chan *chatv1.Message {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	stream := make(chan *chatv1.Message, 10)
-	s.userStreams[userID] = stream
-	return stream
-}
-
-// UnregisterUserStream removes a user's message stream
-func (s *Server) UnregisterUserStream(userID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.userStreams, userID)
-}
-
-// BroadcastToChannel sends a message to all users in a channel
-func (s *Server) BroadcastToChannel(channelID string, msg *chatv1.Message) error {
-	s.mu.RLock()
-	ch, exists := s.channels[channelID]
-	if !exists {
-		s.mu.RUnlock()
-		return ErrChannelNotFound
-	}
-
-	// Copy user IDs while holding the lock
-	userIDs := make([]string, len(ch.Users))
-	for i, u := range ch.Users {
-		userIDs[i] = u.Id
-	}
-	s.mu.RUnlock()
-
-	// Send messages without holding the lock (channel sends can block)
-	for _, userID := range userIDs {
-		s.mu.RLock()
-		userStream, ok := s.userStreams[userID]
-		s.mu.RUnlock()
-		if ok {
-			select {
-			case userStream <- msg:
-			default:
-				// Channel full, skip to avoid blocking
-			}
-		}
-	}
-
-	return nil
+// Broadcaster returns the message broadcaster (for testing)
+func (s *Server) Broadcaster() MessageBroadcaster {
+	return s.broadcaster
 }

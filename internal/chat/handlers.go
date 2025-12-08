@@ -21,21 +21,44 @@ func (s *Server) JoinChannel(
 	}
 
 	// Get or create the channel
-	channel := s.GetOrCreateChannel(req.Msg.ChannelToJoin)
+	channel, err := s.channelRepo.GetOrCreate(ctx, req.Msg.ChannelToJoin)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
 
 	// Add user to the channel
-	s.AddUserToChannel(channel.Id, user)
+	if err := s.channelRepo.AddUser(ctx, channel.Id, user); err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
 
-	// Register the user's message stream
-	userStream := s.RegisterUserStream(user.Id)
-	defer s.UnregisterUserStream(user.Id)
+	// Register the user's session and get message stream
+	userStream, err := s.sessionManager.Register(ctx, user)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Track channel subscription in session
+	if err := s.sessionManager.AddChannel(ctx, user.Id, channel.Id); err != nil {
+		return connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Cleanup on disconnect
+	defer func() {
+		_ = s.sessionManager.RemoveChannel(ctx, user.Id, channel.Id)
+		_ = s.sessionManager.Unregister(ctx, user.Id)
+		_ = s.channelRepo.RemoveUser(ctx, channel.Id, user.Id)
+	}()
 
 	// Stream messages to the user
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case msg := <-userStream:
+		case msg, ok := <-userStream:
+			if !ok {
+				// Channel closed
+				return nil
+			}
 			if err := stream.Send(&chatv1.JoinChannelResponse{MessageStream: msg}); err != nil {
 				return err
 			}
@@ -55,7 +78,8 @@ func (s *Server) SendMessage(
 
 	msg := req.Msg.SentMessage
 
-	if err := s.BroadcastToChannel(msg.ChannelId, msg); err != nil {
+	// Broadcast using the broadcaster interface
+	if err := s.broadcaster.Broadcast(ctx, msg.ChannelId, msg); err != nil {
 		if err == ErrChannelNotFound {
 			return nil, connect.NewError(connect.CodeNotFound, err)
 		}
