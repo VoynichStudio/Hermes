@@ -1,0 +1,29 @@
+# Server configuration
+server:
+  host: "0.0.0.0"
+  port: "8080"
+  tls_enabled: false
+
+# AWS Cognito configuration
+cognito:
+  region: "us-west-2"
+  user_pool_id: ""  # Set via environment variable COGNITO_USER_POOL_ID
+
+# Logging configuration
+log:
+  level: "info"     # debug, info, warn, error, fatal, panic
+  format: "json"    # json or text
+
+# Database configuration (example, not used yet)
+db:
+  host: "localhost"
+  port: 5432
+  name: "hermes"
+  user: "postgres"
+
+# Redis configuration (example, not used yet)
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
