@@ -29,3 +29,9 @@ tags
 
 # Generated files from protobuf
 gen/
+
+# Build output
+bin/
+
+# Coverage reports
+coverage.html
