@@ -21,14 +21,19 @@ dev:
 # Run tests
 test:
 	@echo "Running tests..."
-	go test -v ./...
+	GO_TEST_MODE=1 go test -v ./...
 
 # Run tests with coverage
 test-coverage:
 	@echo "Running tests with coverage..."
-	go test -v -coverprofile=coverage.out ./...
+	GO_TEST_MODE=1 go test -v -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
+
+# Run tests with race detector
+test-race:
+	@echo "Running tests with race detector..."
+	GO_TEST_MODE=1 go test -race -v ./...
 
 # Generate protobuf code
 proto:

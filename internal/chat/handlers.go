@@ -20,8 +20,6 @@ func (s *Server) JoinChannel(
 		return connect.NewError(connect.CodeUnauthenticated, err)
 	}
 
-	channelID := req.Msg.ChannelToJoin.Id
-
 	// Get or create the channel
 	channel := s.GetOrCreateChannel(req.Msg.ChannelToJoin)
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	chatv1 "Hermes/gen/chat/v1"
@@ -16,26 +17,56 @@ import (
 )
 
 const (
-	cognitoRegion     = "us-east-1"
-	cognitoUserPoolID = "us-east-1_example"
-	authHeader        = "Authorization"
+	authHeader = "Authorization"
 )
 
-var jwks keyfunc.Keyfunc
 var (
-	errNoToken      = errors.New("authentication token missing")
-	errInvalidToken = errors.New("invalid authentication token")
-	cognitoIssuer   = fmt.Sprintf("https://cognito-idp.%s.amazonaws.com/%s", cognitoRegion, cognitoUserPoolID)
+	// Configuration - can be overridden via environment variables
+	cognitoRegion     = getEnv("COGNITO_REGION", "us-east-1")
+	cognitoUserPoolID = getEnv("COGNITO_USER_POOL_ID", "us-east-1_example")
+	cognitoIssuer     = fmt.Sprintf("https://cognito-idp.%s.amazonaws.com/%s", cognitoRegion, cognitoUserPoolID)
+
+	// tokenKeyFunc is the key function for validating tokens
+	tokenKeyFunc jwt.Keyfunc
+
+	// Errors
+	ErrNoToken      = errors.New("authentication token missing")
+	ErrInvalidToken = errors.New("invalid authentication token")
+
+	// initialized tracks whether auth has been configured
+	initialized bool
 )
 
 func init() {
-	jwksURL := cognitoIssuer + "/.well-known/jwks.json"
-	var err error
-
-	jwks, err = keyfunc.NewDefault([]string{jwksURL})
-	if err != nil {
-		log.Fatalf("Failed to get JWKS from Cognito: %v", err)
+	// Skip JWKS initialization in test mode
+	if os.Getenv("GO_TEST_MODE") == "1" {
+		log.Println("Auth: test mode - skipping JWKS initialization")
+		return
 	}
+
+	if err := InitializeJWKS(); err != nil {
+		log.Printf("Warning: Failed to initialize JWKS: %v", err)
+	}
+}
+
+// InitializeJWKS loads the JWKS from Cognito
+func InitializeJWKS() error {
+	jwksURL := cognitoIssuer + "/.well-known/jwks.json"
+
+	jwks, err := keyfunc.NewDefault([]string{jwksURL})
+	if err != nil {
+		return fmt.Errorf("failed to get JWKS from Cognito: %w", err)
+	}
+
+	tokenKeyFunc = jwks.Keyfunc
+	initialized = true
+	return nil
+}
+
+// SetKeyFunc allows setting a custom key function for testing
+func SetKeyFunc(kf jwt.Keyfunc) {
+	tokenKeyFunc = kf
+	initialized = true
 }
 
 // UserContextKey is the key for storing user in context
@@ -67,11 +98,16 @@ func NewAuthInterceptor() connect.UnaryInterceptorFunc {
 }
 
 // NewStreamingAuthInterceptor returns a streaming interceptor that validates JWT tokens
-func NewStreamingAuthInterceptor() connect.StreamingHandlerInterceptor {
+func NewStreamingAuthInterceptor() connect.Interceptor {
 	return streamingAuthInterceptor{}
 }
 
 type streamingAuthInterceptor struct{}
+
+func (streamingAuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	// No-op for unary, just pass through (use NewAuthInterceptor for unary)
+	return next
+}
 
 func (streamingAuthInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
 	// No-op for client-side, just pass through
@@ -103,38 +139,60 @@ func UserFromContext(ctx context.Context) (*chatv1.User, bool) {
 func Authenticate(header http.Header) (*chatv1.User, error) {
 	tokenStr := header.Get(authHeader)
 	if tokenStr == "" {
-		return nil, errNoToken
+		return nil, ErrNoToken
 	}
 
 	tokenStr = strings.TrimPrefix(tokenStr, "Bearer ")
 
-	token, err := jwt.Parse(tokenStr, jwks.Keyfunc)
+	if !initialized || tokenKeyFunc == nil {
+		return nil, errors.New("authentication not initialized")
+	}
+
+	token, err := jwt.Parse(tokenStr, tokenKeyFunc)
 	if err != nil {
 		return nil, fmt.Errorf("invalid token: %w", err)
 	}
 
 	if !token.Valid {
-		return nil, errInvalidToken
+		return nil, ErrInvalidToken
 	}
 
-	claims, ok := token.Claims.(jwt.MapClaims)
+	return ParseClaims(token.Claims)
+}
+
+// ParseClaims extracts user information from JWT claims
+func ParseClaims(claims jwt.Claims) (*chatv1.User, error) {
+	mapClaims, ok := claims.(jwt.MapClaims)
 	if !ok {
 		return nil, errors.New("invalid claims format")
 	}
 
-	if iss, ok := claims["iss"].(string); !ok || iss != cognitoIssuer {
+	if iss, ok := mapClaims["iss"].(string); !ok || iss != cognitoIssuer {
 		return nil, errors.New("invalid token issuer")
 	}
 
-	userID, ok := claims["sub"].(string)
+	userID, ok := mapClaims["sub"].(string)
 	if !ok {
 		return nil, errors.New("missing 'sub' claim")
 	}
 
-	username, _ := claims["cognito:username"].(string)
+	username, _ := mapClaims["cognito:username"].(string)
 
 	return &chatv1.User{
 		Id:       userID,
 		Username: username,
 	}, nil
+}
+
+// getEnv returns an environment variable value or a default
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// GetCognitoIssuer returns the configured Cognito issuer URL (for testing)
+func GetCognitoIssuer() string {
+	return cognitoIssuer
 }
