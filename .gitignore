@@ -35,3 +35,7 @@ bin/
 
 # Coverage reports
 coverage.html
+
+# Python cache
+__pycache__/
+*.pyc
