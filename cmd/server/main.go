@@ -8,12 +8,14 @@ import (
 	"os/signal"
 	"syscall"
 
+	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
 	"Hermes/gen/chat/v1/chatv1connect"
 	"Hermes/internal/chat"
 	"Hermes/internal/config"
+	"Hermes/internal/middleware"
 )
 
 func main() {
@@ -24,12 +26,19 @@ func main() {
 		// Continue with defaults for development
 	}
 
+	// Create middleware chain
+	middlewareChain := middleware.NewChain(middleware.DefaultChainConfig())
+	defer middlewareChain.Stop()
+
 	// Create chat server with default in-memory implementations
 	chatServer := chat.NewServerWithDefaults()
 
-	// Set up HTTP handler
+	// Set up HTTP handler with middleware
 	mux := http.NewServeMux()
-	path, handler := chatv1connect.NewChatServiceHandler(chatServer)
+	path, handler := chatv1connect.NewChatServiceHandler(
+		chatServer,
+		connect.WithInterceptors(middlewareChain.CombinedInterceptors()...),
+	)
 	mux.Handle(path, handler)
 
 	// Create HTTP server with h2c (HTTP/2 cleartext) support

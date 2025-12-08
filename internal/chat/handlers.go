@@ -15,9 +15,10 @@ func (s *Server) JoinChannel(
 	req *connect.Request[chatv1.JoinChannelRequest],
 	stream *connect.ServerStream[chatv1.JoinChannelResponse],
 ) error {
-	user, err := auth.Authenticate(req.Header())
-	if err != nil {
-		return connect.NewError(connect.CodeUnauthenticated, err)
+	// Get user from context (set by auth middleware)
+	user, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return connect.NewError(connect.CodeUnauthenticated, auth.ErrNoToken)
 	}
 
 	// Get or create the channel
@@ -71,9 +72,10 @@ func (s *Server) SendMessage(
 	ctx context.Context,
 	req *connect.Request[chatv1.SendMessageRequest],
 ) (*connect.Response[chatv1.SendMessageResponse], error) {
-	_, err := auth.Authenticate(req.Header())
-	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+	// Get user from context (set by auth middleware)
+	_, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, auth.ErrNoToken)
 	}
 
 	msg := req.Msg.SentMessage

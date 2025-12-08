@@ -14,6 +14,7 @@ require (
 require (
 	github.com/MicahParks/jwkset v0.8.0 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	golang.org/x/text v0.29.0 // indirect
 	golang.org/x/time v0.9.0 // indirect
 	google.golang.org/protobuf v1.36.3 // indirect
